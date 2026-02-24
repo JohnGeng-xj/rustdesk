@@ -1,4 +1,4 @@
-package com.carriez.flutter_hbb
+package com.remotecontrol.desktop
 
 import android.Manifest.permission.*
 import android.annotation.SuppressLint
