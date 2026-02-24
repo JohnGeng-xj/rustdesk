@@ -13,20 +13,31 @@ on:
 
 env:
   RUST_VERSION: "1.75"
+  CARGO_NDK_VERSION: "3.1.2"
   FLUTTER_VERSION: "3.24.5"
   NDK_VERSION: "r27c"
+  VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
 
 jobs:
   build-android:
-    name: Build Android APK
+    name: Build Android APK (${{ matrix.arch }})
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        arch:
-          - aarch64-linux-android  # arm64
-          - armv7-linux-androideabi # arm32
-          - x86_64-linux-android   # x86_64
+        include:
+          - arch: aarch64
+            target: aarch64-linux-android
+            android_abi: arm64-v8a
+            platform: android-arm64
+          - arch: armv7
+            target: armv7-linux-androideabi
+            android_abi: armeabi-v7a
+            platform: android-arm
+          - arch: x86_64
+            target: x86_64-linux-android
+            android_abi: x86_64
+            platform: android-x64
 
     steps:
       - name: Free Disk Space
@@ -61,15 +72,66 @@ jobs:
                openjdk-17-jdk-headless \
                pkg-config wget
 
-      - name: Install Rust
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          source "$HOME/.cargo/env"
-          rustup target add ${{ matrix.arch }}
+      - name: Install NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+          link-to-sdk: true
 
-      - name: Install cargo-ndk
-        run: cargo install cargo-ndk --version 3.1.2
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: "${{ github.workspace }}/vcpkg"
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+
+      - name: Build Android dependencies
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
+          VCPKG_ROOT: "${{ github.workspace }}/vcpkg"
+        run: |
+          ./flutter/build_android_deps.sh "${{ matrix.android_abi }}"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: ${{ matrix.target }}
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: rustdesk-android-cache
+          key: ${{ matrix.target }}
+
+      - name: Build rustdesk library
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }} --locked
+          rustup target add ${{ matrix.target }}
+
+          # Build using project scripts
+          case ${{ matrix.target }} in
+            aarch64-linux-android)
+              ./flutter/ndk_arm64.sh
+              mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
+              cp ./target/${{ matrix.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
+              ;;
+            armv7-linux-androideabi)
+              ./flutter/ndk_arm.sh
+              mkdir -p ./flutter/android/app/src/main/jniLibs/armeabi-v7a
+              cp ./target/${{ matrix.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/armeabi-v7a/librustdesk.so
+              ;;
+            x86_64-linux-android)
+              ./flutter/ndk_x64.sh
+              mkdir -p ./flutter/android/app/src/main/jniLibs/x86_64
+              cp ./target/${{ matrix.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/x86_64/librustdesk.so
+              ;;
+          esac
 
       - name: Install Flutter
         uses: subosito/flutter-action@v2
@@ -77,61 +139,51 @@ jobs:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_VERSION }}
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android NDK
-        run: |
-          sdkmanager "ndk;27.2.12479018"
-          echo "ANDROID_NDK=/usr/local/lib/android/sdk/ndk/27.2.12479018" >> $GITHUB_ENV
-
-      - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgDirectory: "${{ github.workspace }}/vcpkg"
-          vcpkgGitCommitId: "120deac3062162151622ca4860575a33844ba10b"
-
-      - name: Build Rust FFI
-        run: |
-          cargo ndk --target ${{ matrix.arch }} \
-                    --android-platform 24 \
-                    build --release
-
-      - name: Get Flutter dependencies
-        working-directory: flutter
-        run: flutter pub get
-
       - name: Build APK
-        working-directory: flutter
+        env:
+          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
-          case "${{ matrix.arch }}" in
+          export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
+
+          # Configure Gradle
+          sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
+          sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
+
+          # Copy libc++_shared.so
+          case ${{ matrix.target }} in
             aarch64-linux-android)
-              flutter build apk --release --target-platform android-arm64
+              mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
+              cp ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/
               ;;
             armv7-linux-androideabi)
-              flutter build apk --release --target-platform android-arm
+              mkdir -p ./flutter/android/app/src/main/jniLibs/armeabi-v7a
+              cp ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/arm-linux-androideabi/libc++_shared.so ./flutter/android/app/src/main/jniLibs/armeabi-v7a/
               ;;
             x86_64-linux-android)
-              flutter build apk --release --target-platform android-x64
+              mkdir -p ./flutter/android/app/src/main/jniLibs/x86_64
+              cp ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/x86_64-linux-android/libc++_shared.so ./flutter/android/app/src/main/jniLibs/x86_64/
               ;;
           esac
 
-      - name: Rename APK
-        working-directory: flutter
+          # Build Flutter APK
+          pushd flutter
+          flutter pub get
+          flutter build apk --release --target-platform ${{ matrix.platform }} --split-per-abi
+          popd
+
+      - name: Prepare artifact
         run: |
-          mkdir -p ../output
-          case "${{ matrix.arch }}" in
+          mkdir -p output
+          case ${{ matrix.target }} in
             aarch64-linux-android)
-              cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
-                 ../output/rustdesk-android-arm64-v8a-release.apk
+              cp ./flutter/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk output/rustdesk-android-arm64-v8a-release.apk
               ;;
             armv7-linux-androideabi)
-              cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk \
-                 ../output/rustdesk-android-armeabi-v7a-release.apk
+              cp ./flutter/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk output/rustdesk-android-armeabi-v7a-release.apk
               ;;
             x86_64-linux-android)
-              cp build/app/outputs/flutter-apk/app-x86_64-release.apk \
-                 ../output/rustdesk-android-x86_64-release.apk
+              cp ./flutter/build/app/outputs/flutter-apk/app-x86_64-release.apk output/rustdesk-android-x86_64-release.apk
               ;;
           esac
 
@@ -181,15 +233,60 @@ jobs:
                openjdk-17-jdk-headless \
                pkg-config wget
 
-      - name: Install Rust
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_VERSION }}
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          source "$HOME/.cargo/env"
-          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+      - name: Install NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+          link-to-sdk: true
 
-      - name: Install cargo-ndk
-        run: cargo install cargo-ndk --version 3.1.2
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: "${{ github.workspace }}/vcpkg"
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+
+      - name: Build Android dependencies (all architectures)
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
+          VCPKG_ROOT: "${{ github.workspace }}/vcpkg"
+        run: |
+          ./flutter/build_android_deps.sh "arm64-v8a"
+          ./flutter/build_android_deps.sh "armeabi-v7a"
+          ./flutter/build_android_deps.sh "x86_64"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: rustdesk-android-universal-cache
+
+      - name: Build rustdesk libraries (all architectures)
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }} --locked
+
+          # Build all architectures
+          ./flutter/ndk_arm64.sh
+          ./flutter/ndk_arm.sh
+          ./flutter/ndk_x64.sh
+
+          # Copy libraries
+          mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
+          mkdir -p ./flutter/android/app/src/main/jniLibs/armeabi-v7a
+          mkdir -p ./flutter/android/app/src/main/jniLibs/x86_64
+          cp ./target/aarch64-linux-android/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
+          cp ./target/armv7-linux-androideabi/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/armeabi-v7a/librustdesk.so
+          cp ./target/x86_64-linux-android/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/x86_64/librustdesk.so
 
       - name: Install Flutter
         uses: subosito/flutter-action@v2
@@ -197,44 +294,34 @@ jobs:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_VERSION }}
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android NDK
-        run: |
-          sdkmanager "ndk;27.2.12479018"
-          echo "ANDROID_NDK=/usr/local/lib/android/sdk/ndk/27.2.12479018" >> $GITHUB_ENV
-
-      - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgDirectory: "${{ github.workspace }}/vcpkg"
-          vcpkgGitCommitId: "120deac3062162151622ca4860575a33844ba10b"
-
-      - name: Build Rust FFI (all architectures)
-        run: |
-          cargo ndk --target aarch64-linux-android \
-                    --target armv7-linux-androideabi \
-                    --target x86_64-linux-android \
-                    --android-platform 24 \
-                    build --release
-
-      - name: Get Flutter dependencies
-        working-directory: flutter
-        run: flutter pub get
-
       - name: Build Universal APK
-        working-directory: flutter
+        env:
+          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
-          flutter build apk --release \
-            --target-platform android-arm64,android-arm,android-x64
+          export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
 
-      - name: Copy Universal APK
-        working-directory: flutter
-        run: |
-          mkdir -p ../output
-          cp build/app/outputs/flutter-apk/app-release.apk \
-             ../output/rustdesk-android-universal-release.apk
+          # Configure Gradle
+          sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
+          sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
+
+          # Copy libc++_shared.so for all architectures
+          mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
+          mkdir -p ./flutter/android/app/src/main/jniLibs/armeabi-v7a
+          mkdir -p ./flutter/android/app/src/main/jniLibs/x86_64
+          cp ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/
+          cp ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/arm-linux-androideabi/libc++_shared.so ./flutter/android/app/src/main/jniLibs/armeabi-v7a/
+          cp ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/x86_64-linux-android/libc++_shared.so ./flutter/android/app/src/main/jniLibs/x86_64/
+
+          # Build Flutter APK (all architectures)
+          pushd flutter
+          flutter pub get
+          flutter build apk --release --target-platform android-arm64,android-arm,android-x64
+          popd
+
+          # Copy output
+          mkdir -p output
+          cp ./flutter/build/app/outputs/flutter-apk/app-release.apk output/rustdesk-android-universal-release.apk
 
       - name: Upload Universal APK
         uses: actions/upload-artifact@v4
