@@ -19,7 +19,12 @@ env:
   VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
 
 jobs:
+  # 首先生成 flutter_rust_bridge 代码
+  generate-bridge:
+    uses: ./.github/workflows/bridge.yml
+
   build-android:
+    needs: [generate-bridge]
     name: Build Android APK (${{ matrix.arch }})
     runs-on: ubuntu-24.04
     strategy:
@@ -93,6 +98,12 @@ jobs:
           VCPKG_ROOT: "${{ github.workspace }}/vcpkg"
         run: |
           ./flutter/build_android_deps.sh "${{ matrix.android_abi }}"
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@master
+        with:
+          name: bridge-artifact
+          path: ./
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@v1
@@ -198,7 +209,7 @@ jobs:
   build-android-universal:
     name: Build Android Universal APK
     runs-on: ubuntu-24.04
-    needs: build-android
+    needs: [generate-bridge, build-android]
 
     steps:
       - name: Free Disk Space
@@ -256,6 +267,12 @@ jobs:
           ./flutter/build_android_deps.sh "arm64-v8a"
           ./flutter/build_android_deps.sh "armeabi-v7a"
           ./flutter/build_android_deps.sh "x86_64"
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@master
+        with:
+          name: bridge-artifact
+          path: ./
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@v1
