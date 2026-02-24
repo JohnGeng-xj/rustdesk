@@ -84,8 +84,9 @@ class _ConnectionPageState extends State<ConnectionPage> {
       slivers: [
         SliverList(
             delegate: SliverChildListDelegate([
-          if (!bind.isCustomClient() && !isIOS)
-            Obx(() => _buildUpdateUI(stateGlobal.updateUrl.value)),
+          // 更新功能已移除 - Update functionality removed
+          // if (!bind.isCustomClient() && !isIOS)
+          //   Obx(() => _buildUpdateUI(stateGlobal.updateUrl.value)),
           _buildRemoteIDTextField(),
         ])),
         SliverFillRemaining(

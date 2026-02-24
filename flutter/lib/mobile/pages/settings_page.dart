@@ -70,7 +70,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
       false; //androidVersion >= 26; // remove because not work on every device
   var _ignoreBatteryOpt = false;
   var _enableStartOnBoot = false;
-  var _checkUpdateOnStartup = false;
+  // var _checkUpdateOnStartup = false; // 更新功能已移除
   var _showTerminalExtraKeys = false;
   var _floatingWindowDisabled = false;
   var _keepScreenOn = KeepScreenOn.duringControlled; // relay on floating window
@@ -180,12 +180,13 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
         _enableStartOnBoot = enableStartOnBoot;
       }
 
-      var checkUpdateOnStartup =
-          mainGetLocalBoolOptionSync(kOptionEnableCheckUpdate);
-      if (checkUpdateOnStartup != _checkUpdateOnStartup) {
-        update = true;
-        _checkUpdateOnStartup = checkUpdateOnStartup;
-      }
+      // 更新功能已移除 - Update functionality removed
+      // var checkUpdateOnStartup =
+      //     mainGetLocalBoolOptionSync(kOptionEnableCheckUpdate);
+      // if (checkUpdateOnStartup != _checkUpdateOnStartup) {
+      //   update = true;
+      //   _checkUpdateOnStartup = checkUpdateOnStartup;
+      // }
 
       var floatingWindowDisabled =
           bind.mainGetLocalOption(key: kOptionDisableFloatingWindow) == "Y" ||
@@ -592,6 +593,8 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
           gFFI.invokeMethod(AndroidChannel.kSetStartOnBootOpt, toValue);
         }));
 
+    // 更新功能已移除 - Update functionality removed
+    /*
     if (!bind.isCustomClient()) {
       enhancementsTiles.add(
         SettingsTile.switchTile(
@@ -607,6 +610,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
         ),
       );
     }
+    */
 
     enhancementsTiles.add(
       SettingsTile.switchTile(

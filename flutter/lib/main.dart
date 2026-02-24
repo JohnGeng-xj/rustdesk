@@ -135,7 +135,7 @@ Future<void> initEnv(String appType) async {
 void runMainApp(bool startService) async {
   // register uni links
   await initEnv(kAppTypeMain);
-  checkUpdate();
+  // checkUpdate(); // 更新功能已移除 - Update functionality removed
   // trigger connection status updater
   await bind.mainCheckConnectStatus();
   if (startService) {
@@ -179,7 +179,7 @@ void runMainApp(bool startService) async {
 
 void runMobileApp() async {
   await initEnv(kAppTypeMain);
-  checkUpdate();
+  // checkUpdate(); // 更新功能已移除 - Update functionality removed
   if (isAndroid) androidChannelInit();
   if (isAndroid) platformFFI.syncAndroidServiceAppDirConfigPath();
   draggablePositions.load();
